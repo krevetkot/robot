@@ -27,66 +27,123 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-void motor_forward()
-{
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);    // AIN1
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);  // AIN2
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET);    // BIN1
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);  // BIN2
-}
 
-void motor_backward()
-{
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);  // AIN1
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);    // AIN2
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_RESET);  // BIN1
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);    // BIN2
-}
+// правый мотор (A): AIN1=PA5, AIN2=PA6
+static void right_forward(void)  { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); }
+static void right_backward(void) { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);   }
+static void right_stop(void)     { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); }
 
-void motor_stop()
-{
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);  // AIN1
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);  // AIN2
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_RESET);  // BIN1
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);  // BIN2
-}
+// левый мотор (B): BIN1=PA2, BIN2=PA3
+static void left_forward(void)   { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET);   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); }
+static void left_backward(void)  { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_RESET); HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);   }
+static void left_stop(void)      { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_RESET); HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); }
+
+// комбинированные команды
+static void drive_forward(void)  { right_forward();  left_forward();  }
+static void drive_backward(void) { right_backward(); left_backward(); }
+static void drive_stop(void)     { right_stop();     left_stop();     }
+static void turn_left(void)      { right_forward();  left_backward(); }  // поворот на месте влево
+static void turn_right(void)     { right_backward(); left_forward();  }  // поворот на месте вправо
+
+// чтение датчиков (активный LOW 0 = препятствие)
+static uint8_t sensor_right(void)  { return HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_RESET; }
+static uint8_t sensor_left(void)   { return HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET; }
+static uint8_t sensor_center(void) { return HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_RESET; }
+
 /* USER CODE END PFP */
 
 int main(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
   HAL_Init();
-
-  /* USER CODE BEGIN Init */
-  // ✅ HAL_TIM_PWM_Start убран отсюда
-  /* USER CODE END Init */
-
   SystemClock_Config();
-
   MX_GPIO_Init();
-  MX_TIM1_Init();
 
-  /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 65530);
-  /* USER CODE END 2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
 
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+  // Soft-PWM: 40 мс едем, 20 мс стоим → 67% мощности (уменьшить ON или увеличить OFF = медленнее)
+  #define SPEED_ON_MS   40
+  #define SPEED_OFF_MS  20
+  #define PRE_TURN_MS   120   // пауза перед поворотом
+  #define POST_TURN_MS  100   // пауза после поворота
 
   while (1)
   {
-      if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET ||
-          HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_RESET ||
-		  HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_RESET )
+      uint8_t r = sensor_right();
+      uint8_t l = sensor_left();
+      uint8_t c = sensor_center();
+
+      if (!c)
       {
-          // препятствие — стоп
-          motor_stop();
+          // спереди свободно — едем вперёд
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+          drive_forward();
+          HAL_Delay(SPEED_ON_MS);
+          drive_stop();
+          HAL_Delay(SPEED_OFF_MS);
       }
       else
       {
-          // путь свободен — вперёд
-          motor_forward();
+          // спереди препятствие — полная остановка
+          drive_stop();
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+          HAL_Delay(PRE_TURN_MS);
+
+          // читаем боковые только после остановки
+          uint8_t sr = sensor_right();
+          uint8_t sl = sensor_left();
+
+          if (!sl && sr)
+          {
+              // слева свободно, справа занято — поворот влево
+              turn_left();
+              HAL_Delay(450);
+          }
+          else if (!sr && sl)
+          {
+              // справа свободно, слева занято — поворот вправо
+              turn_right();
+              HAL_Delay(450);
+          }
+          else if (!sl && !sr)
+          {
+              // оба бока свободны — поворот вправо по умолчанию
+              turn_right();
+              HAL_Delay(450);
+          }
+          else
+          {
+              // со всех сторон заблокировано — назад и разворот
+              drive_backward();
+              HAL_Delay(400);
+              drive_stop();
+              HAL_Delay(PRE_TURN_MS);
+              turn_right();
+              HAL_Delay(840);  // около 180 градусов
+          }
+
+          drive_stop();
+          HAL_Delay(POST_TURN_MS);
+
+          // уезжаем от препятствия чтобы не зациклиться
+          drive_forward();
+          HAL_Delay(250);
+          drive_stop();
+          HAL_Delay(50);
       }
-      HAL_Delay(50);
   }
 }
 
@@ -167,10 +224,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);  // PWMA всегда HIGH
 
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_8;
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -178,12 +235,12 @@ static void MX_GPIO_Init(void)
 
   GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
 
